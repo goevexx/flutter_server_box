@@ -281,9 +281,7 @@ class ServerNotifier extends _$ServerNotifier {
       );
 
       if (stdoutResult.isNotEmpty) {
-        Loggers.app.info(
-          'Script write stdout for ${spi.name}: $stdoutResult',
-        );
+        Loggers.app.info('Script write stdout for ${spi.name}: $stdoutResult');
       }
 
       if (writeScriptResult.isNotEmpty) {
@@ -400,7 +398,12 @@ class ServerNotifier extends _$ServerNotifier {
   }
 
   /// Parse the raw status output into a [ServerStatus]. Returns true on success.
-  Future<bool> _parseStatusPhase(Spi spi, String sid, String raw, List<String> segments) async {
+  Future<bool> _parseStatusPhase(
+    Spi spi,
+    String sid,
+    String raw,
+    List<String> segments,
+  ) async {
     final sessionId = 'ssh_${spi.id}';
     try {
       // Parse script output into command-specific mappings
