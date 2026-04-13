@@ -23,19 +23,22 @@ class WindowsParser {
   const WindowsParser._();
 
   /// Parse Windows custom commands from parsed output
-  static void parseCustomCommands(
+  static ServerStatus parseCustomCommands(
     ServerStatus serverStatus,
     Map<String, String> parsedOutput,
     Map<String, String> customCmds,
   ) {
     try {
+      final newCustomCmds = <String, String>{...serverStatus.customCmds};
       for (final entry in customCmds.entries) {
         final key = entry.key;
         final value = parsedOutput[key] ?? '';
-        serverStatus.customCmds[key] = value;
+        newCustomCmds[key] = value;
       }
+      return serverStatus.copyWith(customCmds: newCustomCmds);
     } catch (e, s) {
       Loggers.app.warning('Windows custom commands parsing failed: $e', s);
+      return serverStatus;
     }
   }
 

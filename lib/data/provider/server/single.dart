@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:computer/computer.dart';
 import 'package:dartssh2/dartssh2.dart';
@@ -69,35 +70,6 @@ class ServerNotifier extends _$ServerNotifier {
     state = state.copyWith(status: status);
   }
 
-  ServerStatus _copyStatus(
-    ServerStatus source, {
-    Err? err,
-    bool setErr = false,
-    SystemType? system,
-  }) {
-    final status = ServerStatus(
-      cpu: source.cpu,
-      mem: source.mem,
-      disk: source.disk.toList(),
-      tcp: source.tcp,
-      netSpeed: source.netSpeed,
-      swap: source.swap,
-      temps: source.temps,
-      system: system ?? source.system,
-      diskIO: source.diskIO,
-      diskSmart: source.diskSmart.toList(),
-      err: setErr ? err : source.err,
-      nvidia: source.nvidia?.toList(),
-      diskUsage: source.diskUsage,
-    );
-    status.amd = source.amd?.toList();
-    status.batteries.addAll(source.batteries);
-    status.more.addAll(source.more);
-    status.sensors.addAll(source.sensors);
-    status.customCmds.addAll(source.customCmds);
-    return status;
-  }
-
   // Update SSH client
   void updateClient(SSHClient? client) {
     if (!identical(state.client, client)) {
@@ -122,6 +94,42 @@ class ServerNotifier extends _$ServerNotifier {
       client: closeClient ? null : client,
       conn: ServerConn.failed,
     );
+  }
+
+  /// Consolidated error handler for all _getData phases.
+  void _handleDataError(
+    String sid,
+    String sessionId,
+    ServerStatus newStatus, {
+    bool closeClient = false,
+  }) {
+    TryLimiter.inc(sid);
+    _setFailedState(newStatus, closeClient: closeClient);
+    TermSessionManager.updateStatus(sessionId, TermSessionStatus.disconnected);
+  }
+
+  /// Classify connection errors using typed checks first, string matching as fallback.
+  ConnectionResult _classifyConnectionError(Object e) {
+    if (e is TimeoutException) return ConnectionResult.timeout;
+    if (e is SocketException) return ConnectionResult.networkError;
+
+    final msg = e.toString().toLowerCase();
+    if (msg.contains('timed out') || msg.contains('timeout')) {
+      return ConnectionResult.timeout;
+    }
+    if (msg.contains('auth') ||
+        msg.contains('authentication') ||
+        msg.contains('permission denied') ||
+        msg.contains('access denied')) {
+      return ConnectionResult.authFailed;
+    }
+    if (msg.contains('connection refused') ||
+        msg.contains('no route to host') ||
+        msg.contains('network') ||
+        msg.contains('socket')) {
+      return ConnectionResult.networkError;
+    }
+    return ConnectionResult.unknownError;
   }
 
   // Close connection
@@ -149,249 +157,183 @@ class ServerNotifier extends _$ServerNotifier {
     await _getData();
   }
 
-  Future<void> _getData() async {
-    final spi = state.spi;
-    final sid = spi.id;
-
-    if (!TryLimiter.canTry(sid)) {
-      if (state.conn != ServerConn.failed) {
-        updateConnection(ServerConn.failed);
+  /// Connect to the server. Returns true on success, false on failure.
+  Future<bool> _connectPhase(Spi spi, String sid) async {
+    // Wake on LAN
+    final wol = spi.wolCfg;
+    if (wol != null) {
+      try {
+        await wol.wake();
+      } catch (e) {
+        Loggers.app.warning('Wake on lan failed', e);
       }
-      return;
     }
 
-    final newStatus = _copyStatus(
-      state.status,
-      err: null,
-      setErr: true,
-    ); // Clear previous error
-    updateStatus(newStatus);
+    final time1 = DateTime.now();
+    try {
+      final client = await genClient(
+        spi,
+        timeout: Duration(seconds: Stores.setting.timeout.fetch()),
+        onKeyboardInteractive: (_) => KeybordInteractive.defaultHandle(spi),
+      );
+      updateClient(client);
 
-    if (state.conn < ServerConn.connecting ||
-        (state.client?.isClosed ?? true)) {
-      updateConnection(ServerConn.connecting);
-
-      // Wake on LAN
-      final wol = spi.wolCfg;
-      if (wol != null) {
-        try {
-          await wol.wake();
-        } catch (e) {
-          Loggers.app.warning('Wake on lan failed', e);
-        }
+      final time2 = DateTime.now();
+      final spentTime = time2.difference(time1).inMilliseconds;
+      if (spi.jumpId == null) {
+        Loggers.app.info('Connected to ${spi.name} in $spentTime ms.');
+      } else {
+        Loggers.app.info('Jump to ${spi.name} in $spentTime ms.');
       }
 
-      final time1 = DateTime.now();
       try {
-        final client = await genClient(
-          spi,
-          timeout: Duration(seconds: Stores.setting.timeout.fetch()),
-          onKeyboardInteractive: (_) => KeybordInteractive.defaultHandle(spi),
+        await Stores.connectionStats.recordConnection(
+          ConnectionStat(
+            serverId: spi.id,
+            serverName: spi.name,
+            timestamp: time1,
+            result: ConnectionResult.success,
+            durationMs: spentTime,
+          ),
         );
-        updateClient(client);
-
-        final time2 = DateTime.now();
-        final spentTime = time2.difference(time1).inMilliseconds;
-        if (spi.jumpId == null) {
-          Loggers.app.info('Connected to ${spi.name} in $spentTime ms.');
-        } else {
-          Loggers.app.info('Jump to ${spi.name} in $spentTime ms.');
-        }
-
-        try {
-          await Stores.connectionStats.recordConnection(
-            ConnectionStat(
-              serverId: spi.id,
-              serverName: spi.name,
-              timestamp: time1,
-              result: ConnectionResult.success,
-              durationMs: spentTime,
-            ),
-          );
-        } catch (e) {
-          Loggers.app.warning('Failed to record connection success', e);
-        }
-
-        final sessionId = 'ssh_${spi.id}';
-        TermSessionManager.add(
-          id: sessionId,
-          spi: spi,
-          startTimeMs: time1.millisecondsSinceEpoch,
-          disconnect: () =>
-              ref.read(serversProvider.notifier).closeOneServer(spi.id),
-          status: TermSessionStatus.connecting,
-          setAsActive: false,
-        );
-        TermSessionManager.setActive(sessionId, hasTerminal: false);
       } catch (e) {
-        TryLimiter.inc(sid);
-
-        final durationMs = DateTime.now().difference(time1).inMilliseconds;
-
-        ConnectionResult failureResult;
-        final errStr = e.toString().toLowerCase();
-        if (errStr.contains('timed out') || errStr.contains('timeout')) {
-          failureResult = ConnectionResult.timeout;
-        } else if (errStr.contains('auth') ||
-            errStr.contains('authentication') ||
-            errStr.contains('permission denied') ||
-            errStr.contains('access denied')) {
-          failureResult = ConnectionResult.authFailed;
-        } else if (errStr.contains('connection refused') ||
-            errStr.contains('no route to host') ||
-            errStr.contains('network') ||
-            errStr.contains('socket')) {
-          failureResult = ConnectionResult.networkError;
-        } else {
-          failureResult = ConnectionResult.unknownError;
-        }
-
-        try {
-          await Stores.connectionStats.recordConnection(
-            ConnectionStat(
-              serverId: spi.id,
-              serverName: spi.name,
-              timestamp: time1,
-              result: failureResult,
-              errorMessage: e.toString(),
-              durationMs: durationMs,
-            ),
-          );
-        } catch (recErr) {
-          Loggers.app.warning('Failed to record connection failure', recErr);
-        }
-
-        final newStatus = _copyStatus(
-          state.status,
-          err: SSHErr(type: SSHErrType.connect, message: e.toString()),
-          setErr: true,
-        );
-        _setFailedState(newStatus, closeClient: true);
-
-        // Remove SSH session when connection fails
-        final sessionId = 'ssh_${spi.id}';
-        TermSessionManager.remove(sessionId);
-
-        Loggers.app.warning('Connect to ${spi.name} failed', e);
-        return;
+        Loggers.app.warning('Failed to record connection success', e);
       }
 
-      updateConnection(ServerConn.connected);
-
-      // Update SSH session status to connected
       final sessionId = 'ssh_${spi.id}';
-      TermSessionManager.updateStatus(sessionId, TermSessionStatus.connected);
+      TermSessionManager.add(
+        id: sessionId,
+        spi: spi,
+        startTimeMs: time1.millisecondsSinceEpoch,
+        disconnect: () =>
+            ref.read(serversProvider.notifier).closeOneServer(spi.id),
+        status: TermSessionStatus.connecting,
+        setAsActive: false,
+      );
+      TermSessionManager.setActive(sessionId, hasTerminal: false);
+      return true;
+    } catch (e) {
+      final durationMs = DateTime.now().difference(time1).inMilliseconds;
+      final failureResult = _classifyConnectionError(e);
 
       try {
-        // Detect system type
-        final detectedSystemType = await SystemDetector.detect(
-          state.client!,
-          spi,
+        await Stores.connectionStats.recordConnection(
+          ConnectionStat(
+            serverId: spi.id,
+            serverName: spi.name,
+            timestamp: time1,
+            result: failureResult,
+            errorMessage: e.toString(),
+            durationMs: durationMs,
+          ),
         );
-        final newStatus = _copyStatus(state.status, system: detectedSystemType);
-        updateStatus(newStatus);
+      } catch (recErr) {
+        Loggers.app.warning('Failed to record connection failure', recErr);
+      }
 
+      final newStatus = state.status.copyWith(
+        err: SSHErr(type: SSHErrType.connect, message: e.toString()),
+      );
+      _handleDataError(sid, 'ssh_${spi.id}', newStatus, closeClient: true);
+
+      // Remove SSH session when connection fails
+      TermSessionManager.remove('ssh_${spi.id}');
+
+      Loggers.app.warning('Connect to ${spi.name} failed', e);
+      return false;
+    }
+  }
+
+  /// Write the status script to the server. Returns the detected [SystemType],
+  /// or null if the phase failed.
+  Future<SystemType?> _writeScriptPhase(Spi spi, String sid) async {
+    final sessionId = 'ssh_${spi.id}';
+    try {
+      // Detect system type
+      final detectedSystemType = await SystemDetector.detect(
+        state.client!,
+        spi,
+      );
+      final newStatus = state.status.copyWith(system: detectedSystemType);
+      updateStatus(newStatus);
+
+      Loggers.app.info(
+        'Writing script for ${spi.name} (${detectedSystemType.name})',
+      );
+
+      final (stdoutResult, writeScriptResult) = await state.client!.execSafe(
+        (session) async {
+          final scriptRaw = ShellFuncManager.allScript(
+            spi.custom?.cmds,
+            systemType: detectedSystemType,
+            disabledCmdTypes: spi.disabledCmdTypes,
+          ).uint8List;
+          session.stdin.add(scriptRaw);
+          session.stdin.close();
+        },
+        entry: ShellFuncManager.getInstallShellCmd(
+          spi.id,
+          systemType: detectedSystemType,
+          customDir: spi.custom?.scriptDir,
+        ),
+        systemType: detectedSystemType,
+        context: 'WriteScript<${spi.name}>',
+      );
+
+      if (stdoutResult.isNotEmpty) {
         Loggers.app.info(
-          'Writing script for ${spi.name} (${detectedSystemType.name})',
+          'Script write stdout for ${spi.name}: $stdoutResult',
         );
+      }
 
-        final (stdoutResult, writeScriptResult) = await state.client!.execSafe(
-          (session) async {
-            final scriptRaw = ShellFuncManager.allScript(
-              spi.custom?.cmds,
-              systemType: detectedSystemType,
-              disabledCmdTypes: spi.disabledCmdTypes,
-            ).uint8List;
-            session.stdin.add(scriptRaw);
-            session.stdin.close();
-          },
-          entry: ShellFuncManager.getInstallShellCmd(
+      if (writeScriptResult.isNotEmpty) {
+        Loggers.app.warning(
+          'Script write stderr for ${spi.name}: $writeScriptResult',
+        );
+        if (detectedSystemType != SystemType.windows) {
+          ShellFuncManager.switchScriptDir(
             spi.id,
             systemType: detectedSystemType,
-            customDir: spi.custom?.scriptDir,
-          ),
-          systemType: detectedSystemType,
-          context: 'WriteScript<${spi.name}>',
-        );
-
-        if (stdoutResult.isNotEmpty) {
-          Loggers.app.info(
-            'Script write stdout for ${spi.name}: $stdoutResult',
           );
+          throw writeScriptResult;
         }
-
-        if (writeScriptResult.isNotEmpty) {
-          Loggers.app.warning(
-            'Script write stderr for ${spi.name}: $writeScriptResult',
-          );
-          if (detectedSystemType != SystemType.windows) {
-            ShellFuncManager.switchScriptDir(
-              spi.id,
-              systemType: detectedSystemType,
-            );
-            throw writeScriptResult;
-          }
-        } else {
-          Loggers.app.info('Script written successfully for ${spi.name}');
-        }
-      } on SSHAuthAbortError catch (e) {
-        TryLimiter.inc(sid);
-        final err = SSHErr(type: SSHErrType.auth, message: e.toString());
-        final newStatus = _copyStatus(state.status, err: err, setErr: true);
-        Loggers.app.warning(err);
-        _setFailedState(newStatus, closeClient: true);
-
-        final sessionId = 'ssh_${spi.id}';
-        TermSessionManager.updateStatus(
-          sessionId,
-          TermSessionStatus.disconnected,
-        );
-        return;
-      } on SSHAuthFailError catch (e) {
-        TryLimiter.inc(sid);
-        final err = SSHErr(type: SSHErrType.auth, message: e.toString());
-        final newStatus = _copyStatus(state.status, err: err, setErr: true);
-        Loggers.app.warning(err);
-        _setFailedState(newStatus, closeClient: true);
-
-        final sessionId = 'ssh_${spi.id}';
-        TermSessionManager.updateStatus(
-          sessionId,
-          TermSessionStatus.disconnected,
-        );
-        return;
-      } catch (e) {
-        final err = SSHErr(type: SSHErrType.writeScript, message: e.toString());
-        final newStatus = _copyStatus(state.status, err: err, setErr: true);
-        Loggers.app.warning(err);
-        _setFailedState(newStatus, closeClient: true);
-
-        final sessionId = 'ssh_${spi.id}';
-        TermSessionManager.updateStatus(
-          sessionId,
-          TermSessionStatus.disconnected,
-        );
-        return;
+      } else {
+        Loggers.app.info('Script written successfully for ${spi.name}');
       }
+
+      return detectedSystemType;
+    } on SSHAuthAbortError catch (e) {
+      final err = SSHErr(type: SSHErrType.auth, message: e.toString());
+      final newStatus = state.status.copyWith(err: err);
+      Loggers.app.warning(err);
+      _handleDataError(sid, sessionId, newStatus, closeClient: true);
+      return null;
+    } on SSHAuthFailError catch (e) {
+      final err = SSHErr(type: SSHErrType.auth, message: e.toString());
+      final newStatus = state.status.copyWith(err: err);
+      Loggers.app.warning(err);
+      _handleDataError(sid, sessionId, newStatus, closeClient: true);
+      return null;
+    } catch (e) {
+      final err = SSHErr(type: SSHErrType.writeScript, message: e.toString());
+      final newStatus = state.status.copyWith(err: err);
+      Loggers.app.warning(err);
+      _handleDataError(sid, sessionId, newStatus, closeClient: true);
+      return null;
     }
+  }
 
-    if (state.conn == ServerConn.connecting) return;
-
-    // Keep finished status to prevent UI from refreshing to loading state
-    if (state.conn != ServerConn.finished) {
-      updateConnection(ServerConn.loading);
-    }
-
-    List<String>? segments;
-    String? raw;
-
+  /// Fetch raw status output from the server. Returns `(raw, segments)` or
+  /// null if the phase failed.
+  Future<(String, List<String>)?> _fetchStatusPhase(Spi spi, String sid) async {
+    final sessionId = 'ssh_${spi.id}';
     try {
       final statusCmd = ShellFunc.status.exec(
         spi.id,
         systemType: state.status.system,
         customDir: spi.custom?.scriptDir,
       );
-      // Loggers.app.info('Running status command for ${spi.name} (${state.status.system.name}): $statusCmd');
+      String raw;
       if (state.status.system == SystemType.windows) {
         final execResult = await state.client?.run(statusCmd);
         if (execResult != null) {
@@ -415,26 +357,17 @@ class ServerNotifier extends _$ServerNotifier {
       }
 
       if (raw.isEmpty) {
-        TryLimiter.inc(sid);
-        final newStatus = _copyStatus(
-          state.status,
+        final newStatus = state.status.copyWith(
           err: SSHErr(
             type: SSHErrType.segements,
             message: 'Empty response from server',
           ),
-          setErr: true,
         );
-        _setFailedState(newStatus);
-
-        final sessionId = 'ssh_${spi.id}';
-        TermSessionManager.updateStatus(
-          sessionId,
-          TermSessionStatus.disconnected,
-        );
-        return;
+        _handleDataError(sid, sessionId, newStatus);
+        return null;
       }
 
-      segments = raw
+      final segments = raw
           .split(ScriptConstants.separator)
           .map((e) => e.trim())
           .toList();
@@ -442,45 +375,33 @@ class ServerNotifier extends _$ServerNotifier {
         if (Stores.setting.keepStatusWhenErr.fetch()) {
           // Keep previous server status when error occurs
           if (state.conn != ServerConn.failed && state.status.more.isNotEmpty) {
-            return;
+            return null;
           }
         }
-        TryLimiter.inc(sid);
-        final newStatus = _copyStatus(
-          state.status,
+        final newStatus = state.status.copyWith(
           err: SSHErr(
             type: SSHErrType.segements,
             message: 'Separate segments failed, raw:\n$raw',
           ),
-          setErr: true,
         );
-        _setFailedState(newStatus);
-
-        final sessionId = 'ssh_${spi.id}';
-        TermSessionManager.updateStatus(
-          sessionId,
-          TermSessionStatus.disconnected,
-        );
-        return;
+        _handleDataError(sid, sessionId, newStatus);
+        return null;
       }
+
+      return (raw, segments);
     } catch (e) {
-      TryLimiter.inc(sid);
-      final newStatus = _copyStatus(
-        state.status,
+      final newStatus = state.status.copyWith(
         err: SSHErr(type: SSHErrType.getStatus, message: e.toString()),
-        setErr: true,
       );
-      _setFailedState(newStatus);
+      _handleDataError(sid, sessionId, newStatus);
       Loggers.app.warning('Get status from ${spi.name} failed', e);
-
-      final sessionId = 'ssh_${spi.id}';
-      TermSessionManager.updateStatus(
-        sessionId,
-        TermSessionStatus.disconnected,
-      );
-      return;
+      return null;
     }
+  }
 
+  /// Parse the raw status output into a [ServerStatus]. Returns true on success.
+  Future<bool> _parseStatusPhase(Spi spi, String sid, String raw, List<String> segments) async {
+    final sessionId = 'ssh_${spi.id}';
     try {
       // Parse script output into command-specific mappings
       final parsedOutput = ScriptConstants.parseScriptOutput(raw);
@@ -498,26 +419,63 @@ class ServerNotifier extends _$ServerNotifier {
         taskName: 'StatusUpdateReq<${spi.id}>',
       );
       updateStatus(newStatus);
+      return true;
     } catch (e, trace) {
-      TryLimiter.inc(sid);
-      final newStatus = _copyStatus(
-        state.status,
+      final newStatus = state.status.copyWith(
         err: SSHErr(
           type: SSHErrType.getStatus,
           message: 'Parse failed: $e\n\n$raw',
         ),
-        setErr: true,
       );
-      _setFailedState(newStatus);
+      _handleDataError(sid, sessionId, newStatus);
       Loggers.app.warning('Server status', e, trace);
+      return false;
+    }
+  }
 
-      final sessionId = 'ssh_${spi.id}';
-      TermSessionManager.updateStatus(
-        sessionId,
-        TermSessionStatus.disconnected,
-      );
+  Future<void> _getData() async {
+    final spi = state.spi;
+    final sid = spi.id;
+
+    if (!TryLimiter.canTry(sid)) {
+      if (state.conn != ServerConn.failed) {
+        updateConnection(ServerConn.failed);
+      }
       return;
     }
+
+    updateStatus(state.status.copyWith(err: null));
+
+    if (state.conn < ServerConn.connecting ||
+        (state.client?.isClosed ?? true)) {
+      updateConnection(ServerConn.connecting);
+
+      final connected = await _connectPhase(spi, sid);
+      if (!connected) return;
+
+      updateConnection(ServerConn.connected);
+
+      // Update SSH session status to connected
+      final sessionId = 'ssh_${spi.id}';
+      TermSessionManager.updateStatus(sessionId, TermSessionStatus.connected);
+
+      final systemType = await _writeScriptPhase(spi, sid);
+      if (systemType == null) return;
+    }
+
+    if (state.conn == ServerConn.connecting) return;
+
+    // Keep finished status to prevent UI from refreshing to loading state
+    if (state.conn != ServerConn.finished) {
+      updateConnection(ServerConn.loading);
+    }
+
+    final result = await _fetchStatusPhase(spi, sid);
+    if (result == null) return;
+    final (raw, segments) = result;
+
+    final ok = await _parseStatusPhase(spi, sid, raw, segments);
+    if (!ok) return;
 
     // Set Server.isBusy to false each time this method is called
     updateConnection(ServerConn.finished);

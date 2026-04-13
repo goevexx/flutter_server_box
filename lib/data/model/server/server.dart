@@ -1,4 +1,5 @@
 import 'package:fl_lib/fl_lib.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:server_box/data/model/app/scripts/cmd_types.dart';
 import 'package:server_box/data/model/server/amd.dart';
 import 'package:server_box/data/model/server/battery.dart';
@@ -13,41 +14,32 @@ import 'package:server_box/data/model/server/sensors.dart';
 import 'package:server_box/data/model/server/system.dart';
 import 'package:server_box/data/model/server/temp.dart';
 
-class ServerStatus {
-  Cpus cpu;
-  Memory mem;
-  Swap swap;
-  List<Disk> disk;
-  Conn tcp;
-  NetSpeed netSpeed;
-  Temperatures temps;
-  SystemType system;
-  Err? err;
-  DiskIO diskIO;
-  List<DiskSmart> diskSmart;
-  List<NvidiaSmiItem>? nvidia;
-  List<AmdSmiItem>? amd;
-  final List<Battery> batteries = [];
-  final Map<StatusCmdType, String> more = {};
-  final List<SensorItem> sensors = [];
-  DiskUsage? diskUsage;
-  final Map<String, String> customCmds = {};
+part 'server.freezed.dart';
 
-  ServerStatus({
-    required this.cpu,
-    required this.mem,
-    required this.disk,
-    required this.tcp,
-    required this.netSpeed,
-    required this.swap,
-    required this.temps,
-    required this.system,
-    required this.diskIO,
-    this.diskSmart = const [],
-    this.err,
-    this.nvidia,
-    this.diskUsage,
-  });
+@freezed
+abstract class ServerStatus with _$ServerStatus {
+  const ServerStatus._();
+
+  const factory ServerStatus({
+    required Cpus cpu,
+    required Memory mem,
+    required Swap swap,
+    required List<Disk> disk,
+    required Conn tcp,
+    required NetSpeed netSpeed,
+    required Temperatures temps,
+    required SystemType system,
+    required DiskIO diskIO,
+    @Default([]) List<DiskSmart> diskSmart,
+    Err? err,
+    List<NvidiaSmiItem>? nvidia,
+    List<AmdSmiItem>? amd,
+    DiskUsage? diskUsage,
+    @Default([]) List<Battery> batteries,
+    @Default(<StatusCmdType, String>{}) Map<StatusCmdType, String> more,
+    @Default([]) List<SensorItem> sensors,
+    @Default(<String, String>{}) Map<String, String> customCmds,
+  }) = _ServerStatus;
 }
 
 enum ServerConn {
