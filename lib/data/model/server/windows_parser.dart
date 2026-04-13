@@ -268,7 +268,8 @@ class WindowsParser {
         free: freeKB,
         avail: freeKB, // Windows doesn't distinguish between free and available
       );
-    } catch (e) {
+    } catch (e, s) {
+      Loggers.app.warning('Windows memory parse failed: $e', s);
       return null;
     }
   }
@@ -326,8 +327,8 @@ class WindowsParser {
       }
 
       return disks;
-    } catch (e) {
-      Loggers.app.warning('Windows disk parsing failed: $e');
+    } catch (e, s) {
+      Loggers.app.warning('Windows disk parsing failed: $e', s);
       return [];
     }
   }

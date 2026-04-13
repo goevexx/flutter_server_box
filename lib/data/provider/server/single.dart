@@ -60,17 +60,14 @@ class ServerNotifier extends _$ServerNotifier {
     return ServerState(spi: spi, status: InitStatus.status);
   }
 
-  // Update connection status
   void updateConnection(ServerConn conn) {
     state = state.copyWith(conn: conn);
   }
 
-  // Update server status
   void updateStatus(ServerStatus status) {
     state = state.copyWith(status: status);
   }
 
-  // Update SSH client
   void updateClient(SSHClient? client) {
     if (!identical(state.client, client)) {
       unawaited(_disposePersistentShell());
@@ -78,7 +75,6 @@ class ServerNotifier extends _$ServerNotifier {
     state = state.copyWith(client: client);
   }
 
-  // Update SPI configuration
   void updateSpi(Spi spi) {
     state = state.copyWith(spi: spi);
   }
@@ -132,14 +128,12 @@ class ServerNotifier extends _$ServerNotifier {
     return ConnectionResult.unknownError;
   }
 
-  // Close connection
   void closeConnection() {
     unawaited(_disposePersistentShell());
     state.client?.close();
     state = state.copyWith(client: null, conn: ServerConn.disconnected);
   }
 
-  // Refresh server status
   bool _isRefreshing = false;
 
   Future<void> refresh() async {
@@ -293,7 +287,7 @@ class ServerNotifier extends _$ServerNotifier {
             spi.id,
             systemType: detectedSystemType,
           );
-          throw writeScriptResult;
+          throw Exception(writeScriptResult);
         }
       } else {
         Loggers.app.info('Script written successfully for ${spi.name}');
@@ -402,7 +396,6 @@ class ServerNotifier extends _$ServerNotifier {
     Spi spi,
     String sid,
     String raw,
-    List<String> segments,
   ) async {
     final sessionId = 'ssh_${spi.id}';
     try {
@@ -477,10 +470,10 @@ class ServerNotifier extends _$ServerNotifier {
     if (result == null) return;
     final (raw, segments) = result;
 
-    final ok = await _parseStatusPhase(spi, sid, raw, segments);
+    final ok = await _parseStatusPhase(spi, sid, raw);
     if (!ok) return;
 
-    // Set Server.isBusy to false each time this method is called
+    // Transition to finished — server is no longer busy/loading
     updateConnection(ServerConn.finished);
     // Reset retry count only after successful preparation
     TryLimiter.reset(sid);

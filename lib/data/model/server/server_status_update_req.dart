@@ -85,6 +85,7 @@ Future<ServerStatus> _getLinuxStatus(ServerStatusUpdateReq req) async {
 
   try {
     final net = NetSpeed.parse(StatusCmdType.net.findInMap(parsedOutput), time);
+    // cpu, netSpeed, diskIO are intentionally shared mutable state (see _createWorkingStatus)
     ss.netSpeed.update(net);
   } catch (e, s) {
     Loggers.app.warning(e, s);
@@ -110,6 +111,7 @@ Future<ServerStatus> _getLinuxStatus(ServerStatusUpdateReq req) async {
 
   try {
     final cpus = SingleCpuCore.parse(StatusCmdType.cpu.findInMap(parsedOutput));
+    // cpu, netSpeed, diskIO are intentionally shared mutable state (see _createWorkingStatus)
     ss.cpu.update(cpus);
     final brand = CpuBrand.parse(
       StatusCmdType.cpuBrand.findInMap(parsedOutput),
@@ -185,6 +187,7 @@ Future<ServerStatus> _getLinuxStatus(ServerStatusUpdateReq req) async {
       StatusCmdType.diskio.findInMap(parsedOutput),
       time,
     );
+    // cpu, netSpeed, diskIO are intentionally shared mutable state (see _createWorkingStatus)
     ss.diskIO.update(diskio);
   } catch (e, s) {
     Loggers.app.warning(e, s);
@@ -218,7 +221,7 @@ Future<ServerStatus> _getLinuxStatus(ServerStatusUpdateReq req) async {
   try {
     final battery = StatusCmdType.battery.findInMap(parsedOutput);
 
-    /// Only collect li-poly batteries
+    // Only collect li-poly batteries
     final batteries = Batteries.parse(battery, true);
     ss = ss.copyWith(batteries: batteries);
   } catch (e, s) {
@@ -251,7 +254,7 @@ Future<ServerStatus> _getLinuxStatus(ServerStatusUpdateReq req) async {
   return ss;
 }
 
-// Same as above, wrap with try-catch
+// Wrap each operation with try-catch so a single failure doesn't abort the refresh cycle.
 Future<ServerStatus> _getBsdStatus(ServerStatusUpdateReq req) async {
   final parsedOutput = req.parsedOutput;
   var ss = req.ss;
@@ -262,6 +265,7 @@ Future<ServerStatus> _getBsdStatus(ServerStatusUpdateReq req) async {
       BSDStatusCmdType.net.findInMap(parsedOutput),
       time,
     );
+    // cpu, netSpeed, diskIO are intentionally shared mutable state (see _createWorkingStatus)
     ss.netSpeed.update(net);
   } catch (e, s) {
     Loggers.app.warning(e, s);
@@ -280,6 +284,7 @@ Future<ServerStatus> _getBsdStatus(ServerStatusUpdateReq req) async {
 
   try {
     final cpu = parseBsdCpu(BSDStatusCmdType.cpu.findInMap(parsedOutput));
+    // cpu, netSpeed, diskIO are intentionally shared mutable state (see _createWorkingStatus)
     ss.cpu.update(cpu.now);
   } catch (e, s) {
     Loggers.app.warning(e, s);
@@ -386,7 +391,6 @@ String? _parseHostName(String raw) {
   return trimmed;
 }
 
-// Windows status parsing implementation
 Future<ServerStatus> _getWindowsStatus(ServerStatusUpdateReq req) async {
   final parsedOutput = req.parsedOutput;
   var ss = req.ss;
@@ -405,7 +409,7 @@ Future<ServerStatus> _getWindowsStatus(ServerStatusUpdateReq req) async {
   ss = _parseWindowsDiskIOData(ss, parsedOutput, time);
   ss = _parseWindowsConnectionData(ss, parsedOutput);
   ss = _parseWindowsBatteryData(ss, parsedOutput);
-  ss = _parseWindowsTemperatureData(ss, parsedOutput);
+  ss = _parseWindowsTemperatureData(ss, parsedOutput, divisor: req.tempDivisor);
   ss = _parseWindowsGpuData(ss, parsedOutput);
   ss = WindowsParser.parseCustomCommands(ss, req.parsedOutput, req.customCmds);
 
@@ -427,6 +431,7 @@ ServerStatus _parseWindowsNetworkData(
         !netRaw.contains('Exception')) {
       final netParts = _parseWindowsNetwork(netRaw, time);
       if (netParts.isNotEmpty) {
+        // cpu, netSpeed, diskIO are intentionally shared mutable state (see _createWorkingStatus)
         ss.netSpeed.update(netParts);
       }
     }
@@ -484,6 +489,7 @@ ServerStatus _parseWindowsCpuData(
         !cpuRaw.contains('Exception')) {
       final cpuResult = WindowsParser.parseCpu(cpuRaw, ss);
       if (cpuResult.cores.isNotEmpty) {
+        // cpu, netSpeed, diskIO are intentionally shared mutable state (see _createWorkingStatus)
         ss.cpu.update(cpuResult.cores);
         final brandRaw = WindowsStatusCmdType.cpuBrand.findInMap(parsedOutput);
         if (brandRaw.isNotEmpty && brandRaw != 'null') {
@@ -580,6 +586,7 @@ ServerStatus _parseWindowsDiskIOData(
     final diskIOraw = WindowsStatusCmdType.diskio.findInMap(parsedOutput);
     if (diskIOraw.isNotEmpty && diskIOraw != 'null') {
       final diskio = _parseWindowsDiskIO(diskIOraw, time);
+      // cpu, netSpeed, diskIO are intentionally shared mutable state (see _createWorkingStatus)
       ss.diskIO.update(diskio);
     }
   } catch (e, s) {
@@ -627,12 +634,13 @@ ServerStatus _parseWindowsBatteryData(
 /// Parse Windows temperature data
 ServerStatus _parseWindowsTemperatureData(
   ServerStatus ss,
-  Map<String, String> parsedOutput,
-) {
+  Map<String, String> parsedOutput, {
+  double divisor = 1000.0,
+}) {
   try {
     final tempRaw = WindowsStatusCmdType.temp.findInMap(parsedOutput);
     if (tempRaw.isNotEmpty && tempRaw != 'null') {
-      _parseWindowsTemperatures(ss.temps, tempRaw);
+      _parseWindowsTemperatures(ss.temps, tempRaw, divisor: divisor);
     }
   } catch (e, s) {
     Loggers.app.warning('Windows temperature parsing failed: $e', s);
@@ -666,147 +674,135 @@ ServerStatus _parseWindowsGpuData(
 }
 
 List<Battery> _parseWindowsBatteries(String raw) {
-  try {
-    final dynamic jsonData = json.decode(raw);
-    final List<Battery> batteries = [];
+  final dynamic jsonData = json.decode(raw);
+  final List<Battery> batteries = [];
 
-    final batteryList = jsonData is List ? jsonData : [jsonData];
+  final batteryList = jsonData is List ? jsonData : [jsonData];
 
-    for (final batteryData in batteryList) {
-      final chargeRemaining =
-          batteryData['EstimatedChargeRemaining'] as int? ?? 0;
-      final batteryStatus = batteryData['BatteryStatus'] as int? ?? 0;
+  for (final batteryData in batteryList) {
+    final chargeRemaining =
+        batteryData['EstimatedChargeRemaining'] as int? ?? 0;
+    final batteryStatus = batteryData['BatteryStatus'] as int? ?? 0;
 
-      // Windows battery status: 1=Other, 2=Unknown, 3=Full, 4=Low,
-      // 5=Critical, 6=Charging, 7=ChargingAndLow, 8=ChargingAndCritical,
-      // 9=Undefined, 10=PartiallyCharged
-      final isCharging =
-          batteryStatus == 6 || batteryStatus == 7 || batteryStatus == 8;
+    // Windows battery status: 1=Other, 2=Unknown, 3=Full, 4=Low,
+    // 5=Critical, 6=Charging, 7=ChargingAndLow, 8=ChargingAndCritical,
+    // 9=Undefined, 10=PartiallyCharged
+    final isCharging =
+        batteryStatus == 6 || batteryStatus == 7 || batteryStatus == 8;
 
-      batteries.add(
-        Battery(
-          name: 'Battery',
-          percent: chargeRemaining,
-          status: isCharging
-              ? BatteryStatus.charging
-              : BatteryStatus.discharging,
-        ),
-      );
-    }
-
-    return batteries;
-  } catch (e) {
-    return [];
+    batteries.add(
+      Battery(
+        name: 'Battery',
+        percent: chargeRemaining,
+        status: isCharging
+            ? BatteryStatus.charging
+            : BatteryStatus.discharging,
+      ),
+    );
   }
+
+  return batteries;
 }
 
 List<NetSpeedPart> _parseWindowsNetwork(String raw, int currentTime) {
-  try {
-    final dynamic jsonData = json.decode(raw);
-    final List<NetSpeedPart> netParts = [];
+  final dynamic jsonData = json.decode(raw);
+  final List<NetSpeedPart> netParts = [];
 
-    if (jsonData is List && jsonData.length >= 2) {
-      var sample1 = jsonData[jsonData.length - 2];
-      var sample2 = jsonData[jsonData.length - 1];
-      if (sample1 is Map && sample1.containsKey('value')) {
-        sample1 = sample1['value'];
-      }
-      if (sample2 is Map && sample2.containsKey('value')) {
-        sample2 = sample2['value'];
-      }
-      if (sample1 is List &&
-          sample2 is List &&
-          sample1.length == sample2.length) {
-        for (int i = 0; i < sample1.length; i++) {
-          final s1 = sample1[i];
-          final s2 = sample2[i];
-          final name = s1['Name']?.toString() ?? '';
-          if (name.isEmpty || name == '_Total') continue;
-          final rx1 = (s1['BytesReceivedPersec'] as num?)?.toDouble() ?? 0;
-          final rx2 = (s2['BytesReceivedPersec'] as num?)?.toDouble() ?? 0;
-          final tx1 = (s1['BytesSentPersec'] as num?)?.toDouble() ?? 0;
-          final tx2 = (s2['BytesSentPersec'] as num?)?.toDouble() ?? 0;
-          final time1 = (s1['Timestamp_Sys100NS'] as num?)?.toDouble() ?? 0;
-          final time2 = (s2['Timestamp_Sys100NS'] as num?)?.toDouble() ?? 0;
-          final timeDelta = (time2 - time1) / 10000000;
-          if (timeDelta <= 0) continue;
-          final rxDelta = rx2 - rx1;
-          final txDelta = tx2 - tx1;
-          if (rxDelta < 0 || txDelta < 0) continue;
-          final rxSpeed = rxDelta / timeDelta;
-          final txSpeed = txDelta / timeDelta;
-          netParts.add(
-            NetSpeedPart(
-              name,
-              BigInt.from(rxSpeed.toInt()),
-              BigInt.from(txSpeed.toInt()),
-              currentTime,
-            ),
-          );
-        }
+  if (jsonData is List && jsonData.length >= 2) {
+    var sample1 = jsonData[jsonData.length - 2];
+    var sample2 = jsonData[jsonData.length - 1];
+    if (sample1 is Map && sample1.containsKey('value')) {
+      sample1 = sample1['value'];
+    }
+    if (sample2 is Map && sample2.containsKey('value')) {
+      sample2 = sample2['value'];
+    }
+    if (sample1 is List &&
+        sample2 is List &&
+        sample1.length == sample2.length) {
+      for (int i = 0; i < sample1.length; i++) {
+        final s1 = sample1[i];
+        final s2 = sample2[i];
+        final name = s1['Name']?.toString() ?? '';
+        if (name.isEmpty || name == '_Total') continue;
+        final rx1 = (s1['BytesReceivedPersec'] as num?)?.toDouble() ?? 0;
+        final rx2 = (s2['BytesReceivedPersec'] as num?)?.toDouble() ?? 0;
+        final tx1 = (s1['BytesSentPersec'] as num?)?.toDouble() ?? 0;
+        final tx2 = (s2['BytesSentPersec'] as num?)?.toDouble() ?? 0;
+        final time1 = (s1['Timestamp_Sys100NS'] as num?)?.toDouble() ?? 0;
+        final time2 = (s2['Timestamp_Sys100NS'] as num?)?.toDouble() ?? 0;
+        final timeDelta = (time2 - time1) / 10000000;
+        if (timeDelta <= 0) continue;
+        final rxDelta = rx2 - rx1;
+        final txDelta = tx2 - tx1;
+        if (rxDelta < 0 || txDelta < 0) continue;
+        final rxSpeed = rxDelta / timeDelta;
+        final txSpeed = txDelta / timeDelta;
+        netParts.add(
+          NetSpeedPart(
+            name,
+            BigInt.from(rxSpeed.toInt()),
+            BigInt.from(txSpeed.toInt()),
+            currentTime,
+          ),
+        );
       }
     }
-
-    return netParts;
-  } catch (e) {
-    return [];
   }
+
+  return netParts;
 }
 
 List<DiskIOPiece> _parseWindowsDiskIO(String raw, int currentTime) {
-  try {
-    final dynamic jsonData = json.decode(raw);
-    final List<DiskIOPiece> diskParts = [];
+  final dynamic jsonData = json.decode(raw);
+  final List<DiskIOPiece> diskParts = [];
 
-    if (jsonData is List && jsonData.length >= 2) {
-      var sample1 = jsonData[jsonData.length - 2];
-      var sample2 = jsonData[jsonData.length - 1];
-      if (sample1 is Map && sample1.containsKey('value')) {
-        sample1 = sample1['value'];
-      }
-      if (sample2 is Map && sample2.containsKey('value')) {
-        sample2 = sample2['value'];
-      }
-      if (sample1 is List &&
-          sample2 is List &&
-          sample1.length == sample2.length) {
-        for (int i = 0; i < sample1.length; i++) {
-          final s1 = sample1[i];
-          final s2 = sample2[i];
-          final name = s1['Name']?.toString() ?? '';
-          if (name.isEmpty || name == '_Total') continue;
-          final read1 = (s1['DiskReadBytesPersec'] as num?)?.toDouble() ?? 0;
-          final read2 = (s2['DiskReadBytesPersec'] as num?)?.toDouble() ?? 0;
-          final write1 = (s1['DiskWriteBytesPersec'] as num?)?.toDouble() ?? 0;
-          final write2 = (s2['DiskWriteBytesPersec'] as num?)?.toDouble() ?? 0;
-          final time1 = (s1['Timestamp_Sys100NS'] as num?)?.toDouble() ?? 0;
-          final time2 = (s2['Timestamp_Sys100NS'] as num?)?.toDouble() ?? 0;
-          final timeDelta = (time2 - time1) / 10000000;
-          if (timeDelta <= 0) continue;
-          final readDelta = read2 - read1;
-          final writeDelta = write2 - write1;
-          if (readDelta < 0 || writeDelta < 0) continue;
-          final readSpeed = readDelta / timeDelta;
-          final writeSpeed = writeDelta / timeDelta;
-          final sectorsRead = (readSpeed / 512).round();
-          final sectorsWrite = (writeSpeed / 512).round();
+  if (jsonData is List && jsonData.length >= 2) {
+    var sample1 = jsonData[jsonData.length - 2];
+    var sample2 = jsonData[jsonData.length - 1];
+    if (sample1 is Map && sample1.containsKey('value')) {
+      sample1 = sample1['value'];
+    }
+    if (sample2 is Map && sample2.containsKey('value')) {
+      sample2 = sample2['value'];
+    }
+    if (sample1 is List &&
+        sample2 is List &&
+        sample1.length == sample2.length) {
+      for (int i = 0; i < sample1.length; i++) {
+        final s1 = sample1[i];
+        final s2 = sample2[i];
+        final name = s1['Name']?.toString() ?? '';
+        if (name.isEmpty || name == '_Total') continue;
+        final read1 = (s1['DiskReadBytesPersec'] as num?)?.toDouble() ?? 0;
+        final read2 = (s2['DiskReadBytesPersec'] as num?)?.toDouble() ?? 0;
+        final write1 = (s1['DiskWriteBytesPersec'] as num?)?.toDouble() ?? 0;
+        final write2 = (s2['DiskWriteBytesPersec'] as num?)?.toDouble() ?? 0;
+        final time1 = (s1['Timestamp_Sys100NS'] as num?)?.toDouble() ?? 0;
+        final time2 = (s2['Timestamp_Sys100NS'] as num?)?.toDouble() ?? 0;
+        final timeDelta = (time2 - time1) / 10000000;
+        if (timeDelta <= 0) continue;
+        final readDelta = read2 - read1;
+        final writeDelta = write2 - write1;
+        if (readDelta < 0 || writeDelta < 0) continue;
+        final readSpeed = readDelta / timeDelta;
+        final writeSpeed = writeDelta / timeDelta;
+        final sectorsRead = (readSpeed / 512).round();
+        final sectorsWrite = (writeSpeed / 512).round();
 
-          diskParts.add(
-            DiskIOPiece(
-              dev: name,
-              sectorsRead: sectorsRead,
-              sectorsWrite: sectorsWrite,
-              time: currentTime,
-            ),
-          );
-        }
+        diskParts.add(
+          DiskIOPiece(
+            dev: name,
+            sectorsRead: sectorsRead,
+            sectorsWrite: sectorsWrite,
+            time: currentTime,
+          ),
+        );
       }
     }
-
-    return diskParts;
-  } catch (e) {
-    return [];
   }
+
+  return diskParts;
 }
 
 void _parseWindowsTemperatures(

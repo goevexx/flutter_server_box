@@ -112,30 +112,28 @@ Filesystem  1024-blocks   Used Available Capacity Mounted on
   });
 }
 
-// These tests rely on `InitStatus.status` returning a fresh `ServerStatus`
-// instance on each call so this helper can safely seed per-test state.
+// Build a previous status with known fields using copyWith on the Freezed class.
 ServerStatus _createPreviousStatus() {
-  final previous = InitStatus.status;
-  previous.disk = [
-    Disk(
-      path: '/dev/old',
-      mount: '/',
-      usedPercent: 50,
-      used: BigInt.from(500),
-      size: BigInt.from(1000),
-      avail: BigInt.from(500),
-    ),
-  ];
-  previous.diskUsage = DiskUsage.parse(previous.disk);
-  previous.more[StatusCmdType.host] = 'old-host';
-  previous.sensors.add(
-    const SensorItem(
-      device: 'old-sensor',
-      adapter: SensorAdaptor.isa,
-      details: {'temp1': '+40.0C'},
-    ),
+  final oldDisk = Disk(
+    path: '/dev/old',
+    mount: '/',
+    usedPercent: 50,
+    used: BigInt.from(500),
+    size: BigInt.from(1000),
+    avail: BigInt.from(500),
   );
-  return previous;
+  return InitStatus.status.copyWith(
+    disk: [oldDisk],
+    diskUsage: DiskUsage.parse([oldDisk]),
+    more: {StatusCmdType.host: 'old-host'},
+    sensors: const [
+      SensorItem(
+        device: 'old-sensor',
+        adapter: SensorAdaptor.isa,
+        details: {'temp1': '+40.0C'},
+      ),
+    ],
+  );
 }
 
 void _expectClearedResult(ServerStatus result) {
