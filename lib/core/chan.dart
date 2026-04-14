@@ -12,12 +12,14 @@ abstract final class MethodChans {
 
   /// Issue #662
   static void startService() {
+    if (!isAndroid) return;
     if (Stores.setting.fgService.fetch() != true) return;
     _channel.invokeMethod('startService');
   }
 
   /// Issue #662
   static void stopService() {
+    if (!isAndroid) return;
     if (Stores.setting.fgService.fetch() != true) return;
     _channel.invokeMethod('stopService');
   }
