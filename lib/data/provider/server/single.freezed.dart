@@ -49,7 +49,7 @@ $Res call({
 });
 
 
-$SpiCopyWith<$Res> get spi;
+$SpiCopyWith<$Res> get spi;$ServerStatusCopyWith<$Res> get status;
 
 }
 /// @nodoc
@@ -79,6 +79,15 @@ $SpiCopyWith<$Res> get spi {
   
   return $SpiCopyWith<$Res>(_self.spi, (value) {
     return _then(_self.copyWith(spi: value));
+  });
+}/// Create a copy of ServerState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ServerStatusCopyWith<$Res> get status {
+  
+  return $ServerStatusCopyWith<$Res>(_self.status, (value) {
+    return _then(_self.copyWith(status: value));
   });
 }
 }
@@ -260,7 +269,7 @@ $Res call({
 });
 
 
-@override $SpiCopyWith<$Res> get spi;
+@override $SpiCopyWith<$Res> get spi;@override $ServerStatusCopyWith<$Res> get status;
 
 }
 /// @nodoc
@@ -291,6 +300,15 @@ $SpiCopyWith<$Res> get spi {
   
   return $SpiCopyWith<$Res>(_self.spi, (value) {
     return _then(_self.copyWith(spi: value));
+  });
+}/// Create a copy of ServerState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ServerStatusCopyWith<$Res> get status {
+  
+  return $ServerStatusCopyWith<$Res>(_self.status, (value) {
+    return _then(_self.copyWith(status: value));
   });
 }
 }

@@ -23,19 +23,22 @@ class WindowsParser {
   const WindowsParser._();
 
   /// Parse Windows custom commands from parsed output
-  static void parseCustomCommands(
+  static ServerStatus parseCustomCommands(
     ServerStatus serverStatus,
     Map<String, String> parsedOutput,
     Map<String, String> customCmds,
   ) {
     try {
+      final newCustomCmds = <String, String>{...serverStatus.customCmds};
       for (final entry in customCmds.entries) {
         final key = entry.key;
         final value = parsedOutput[key] ?? '';
-        serverStatus.customCmds[key] = value;
+        newCustomCmds[key] = value;
       }
+      return serverStatus.copyWith(customCmds: newCustomCmds);
     } catch (e, s) {
       Loggers.app.warning('Windows custom commands parsing failed: $e', s);
+      return serverStatus;
     }
   }
 
@@ -43,7 +46,11 @@ class WindowsParser {
   static String? parseUpTime(String raw) {
     try {
       // Clean the input - trim whitespace and get the first non-empty line
-      final cleanedInput = raw.trim().split('\n').where((line) => line.trim().isNotEmpty).firstOrNull;
+      final cleanedInput = raw
+          .trim()
+          .split('\n')
+          .where((line) => line.trim().isNotEmpty)
+          .firstOrNull;
 
       if (cleanedInput == null || cleanedInput.isEmpty) {
         Loggers.app.warning('Windows uptime parsing: empty or null input');
@@ -53,13 +60,25 @@ class WindowsParser {
       // Try multiple date formats to handle different Windows locale/version outputs
       final formatters = [
         DateFormat('EEEE, MMMM d, yyyy h:mm:ss a', 'en_US'), // Original format
-        DateFormat('EEEE, MMMM dd, yyyy h:mm:ss a', 'en_US'), // Double-digit day
+        DateFormat(
+          'EEEE, MMMM dd, yyyy h:mm:ss a',
+          'en_US',
+        ), // Double-digit day
         DateFormat('EEE, MMM d, yyyy h:mm:ss a', 'en_US'), // Shortened format
-        DateFormat('EEE, MMM dd, yyyy h:mm:ss a', 'en_US'), // Shortened with double-digit day
+        DateFormat(
+          'EEE, MMM dd, yyyy h:mm:ss a',
+          'en_US',
+        ), // Shortened with double-digit day
         DateFormat('M/d/yyyy h:mm:ss a', 'en_US'), // Short US format
-        DateFormat('MM/dd/yyyy h:mm:ss a', 'en_US'), // Short US format with zero padding
+        DateFormat(
+          'MM/dd/yyyy h:mm:ss a',
+          'en_US',
+        ), // Short US format with zero padding
         DateFormat('d/M/yyyy h:mm:ss a', 'en_US'), // Short European format
-        DateFormat('dd/MM/yyyy h:mm:ss a', 'en_US'), // Short European format with zero padding
+        DateFormat(
+          'dd/MM/yyyy h:mm:ss a',
+          'en_US',
+        ), // Short European format with zero padding
       ];
 
       DateTime? dateTime;
@@ -69,7 +88,9 @@ class WindowsParser {
       }
 
       if (dateTime == null) {
-        Loggers.app.warning('Windows uptime parsing: could not parse date format for: $cleanedInput');
+        Loggers.app.warning(
+          'Windows uptime parsing: could not parse date format for: $cleanedInput',
+        );
         return null;
       }
 
@@ -95,7 +116,10 @@ class WindowsParser {
         return '$hours:${minutes.toString().padLeft(2, '0')}';
       }
     } catch (e, s) {
-      Loggers.app.warning('Windows uptime parsing failed: $e for input: $raw', s);
+      Loggers.app.warning(
+        'Windows uptime parsing failed: $e for input: $raw',
+        s,
+      );
       return null;
     }
   }
@@ -117,7 +141,8 @@ class WindowsParser {
           final processor = jsonData[procIdx];
           final loadPercentage = (processor['LoadPercentage'] as num?) ?? 0;
           final numberOfCores = (processor['NumberOfCores'] as int?) ?? 1;
-          final numberOfLogicalProcessors = (processor['NumberOfLogicalProcessors'] as int?) ?? numberOfCores;
+          final numberOfLogicalProcessors =
+              (processor['NumberOfLogicalProcessors'] as int?) ?? numberOfCores;
           totalCoreCount += numberOfCores;
           final usage = loadPercentage.toInt();
           final idle = 100 - usage;
@@ -128,7 +153,9 @@ class WindowsParser {
             final coreId = logicalProcessorOffset + i;
             // Skip summary entry at index 0 when looking up previous samples
             final prevIndex = coreId + 1;
-            final prevCpu = prevIndex < prevCpus.length ? prevCpus[prevIndex] : null;
+            final prevCpu = prevIndex < prevCpus.length
+                ? prevCpus[prevIndex]
+                : null;
 
             // LIMITATION: Windows CPU counters approach
             // PowerShell provides LoadPercentage as instantaneous percentage, not cumulative time.
@@ -157,7 +184,8 @@ class WindowsParser {
         // Single physical processor
         final loadPercentage = (jsonData['LoadPercentage'] as num?) ?? 0;
         final numberOfCores = (jsonData['NumberOfCores'] as int?) ?? 1;
-        final numberOfLogicalProcessors = (jsonData['NumberOfLogicalProcessors'] as int?) ?? numberOfCores;
+        final numberOfLogicalProcessors =
+            (jsonData['NumberOfLogicalProcessors'] as int?) ?? numberOfCores;
         totalCoreCount = numberOfCores;
         final usage = loadPercentage.toInt();
         final idle = 100 - usage;
@@ -167,7 +195,9 @@ class WindowsParser {
         for (int i = 0; i < numberOfLogicalProcessors; i++) {
           // Skip summary entry at index 0 when looking up previous samples
           final prevIndex = i + 1;
-          final prevCpu = prevIndex < prevCpus.length ? prevCpus[prevIndex] : null;
+          final prevCpu = prevIndex < prevCpus.length
+              ? prevCpus[prevIndex]
+              : null;
 
           // LIMITATION: See comment above for Windows CPU counter limitations
           final newUser = (prevCpu?.user ?? 0) + usage;
@@ -198,16 +228,19 @@ class WindowsParser {
           totalIdle += core.idle;
         }
         // Insert at the beginning with ID 'cpu' (matching Linux format)
-        cpus.insert(0, SingleCpuCore(
-          'cpu', // Summary entry, like Linux
-          totalUser,
+        cpus.insert(
           0,
-          0,
-          totalIdle,
-          0,
-          0,
-          0,
-        ));
+          SingleCpuCore(
+            'cpu', // Summary entry, like Linux
+            totalUser,
+            0,
+            0,
+            totalIdle,
+            0,
+            0,
+            0,
+          ),
+        );
       }
 
       return WindowsCpuResult(cpus, totalCoreCount);
@@ -235,7 +268,8 @@ class WindowsParser {
         free: freeKB,
         avail: freeKB, // Windows doesn't distinguish between free and available
       );
-    } catch (e) {
+    } catch (e, s) {
+      Loggers.app.warning('Windows memory parse failed: $e', s);
       return null;
     }
   }
@@ -250,13 +284,19 @@ class WindowsParser {
 
       for (final diskData in diskList) {
         final deviceId = diskData['DeviceID']?.toString() ?? '';
-        final size = BigInt.tryParse(diskData['Size']?.toString() ?? '0') ?? BigInt.zero;
-        final freeSpace = BigInt.tryParse(diskData['FreeSpace']?.toString() ?? '0') ?? BigInt.zero;
+        final size =
+            BigInt.tryParse(diskData['Size']?.toString() ?? '0') ?? BigInt.zero;
+        final freeSpace =
+            BigInt.tryParse(diskData['FreeSpace']?.toString() ?? '0') ??
+            BigInt.zero;
         final fileSystem = diskData['FileSystem']?.toString() ?? '';
 
         // Validate all required fields
         final hasRequiredFields =
-            deviceId.isNotEmpty && size != BigInt.zero && freeSpace != BigInt.zero && fileSystem.isNotEmpty;
+            deviceId.isNotEmpty &&
+            size != BigInt.zero &&
+            freeSpace != BigInt.zero &&
+            fileSystem.isNotEmpty;
 
         if (!hasRequiredFields) {
           Loggers.app.warning(
@@ -287,8 +327,8 @@ class WindowsParser {
       }
 
       return disks;
-    } catch (e) {
-      Loggers.app.warning('Windows disk parsing failed: $e');
+    } catch (e, s) {
+      Loggers.app.warning('Windows disk parsing failed: $e', s);
       return [];
     }
   }
