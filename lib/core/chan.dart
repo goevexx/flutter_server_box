@@ -11,15 +11,25 @@ abstract final class MethodChans {
   }
 
   /// Issue #662
-  static void startService() {
+  static Future<void> startService() async {
+    if (!isAndroid) return;
     if (Stores.setting.fgService.fetch() != true) return;
-    _channel.invokeMethod('startService');
+    try {
+      await _channel.invokeMethod('startService');
+    } catch (e, s) {
+      Loggers.app.warning('Failed to start foreground service', e, s);
+    }
   }
 
   /// Issue #662
-  static void stopService() {
+  static Future<void> stopService() async {
+    if (!isAndroid) return;
     if (Stores.setting.fgService.fetch() != true) return;
-    _channel.invokeMethod('stopService');
+    try {
+      await _channel.invokeMethod('stopService');
+    } catch (e, s) {
+      Loggers.app.warning('Failed to stop foreground service', e, s);
+    }
   }
 
   static void updateHomeWidget() async {

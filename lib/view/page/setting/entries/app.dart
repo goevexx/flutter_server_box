@@ -27,7 +27,14 @@ extension _App on _AppSettingsPageState {
     return ExpandTile(
       leading: const Icon(Icons.phone_android),
       title: Text('Android ${libL10n.setting}'),
-      children: [_buildBgRun(), _buildAndroidWidgetSharedPreference()],
+      children: [_buildBgRun(), _buildFgService(), _buildAndroidWidgetSharedPreference()],
+    );
+  }
+
+  Widget _buildFgService() {
+    return ListTile(
+      title: TipText(l10n.fgService, l10n.fgServiceTip),
+      trailing: StoreSwitch(prop: Stores.setting.fgService),
     );
   }
 

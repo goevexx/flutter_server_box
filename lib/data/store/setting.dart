@@ -256,7 +256,7 @@ class SettingStore extends HiveStore {
   late final desktopSshAutoCopyPassword = propertyDefault('desktopSshAutoCopyPassword', false);
 
   /// Run foreground service on Android, if the SSH terminal is running
-  late final fgService = propertyDefault('fgService', false);
+  late final fgService = propertyDefault('fgService', isAndroid);
 
   /// Close the editor after saving
   late final closeAfterSave = propertyDefault('closeAfterSave', false);
